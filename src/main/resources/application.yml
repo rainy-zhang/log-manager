@@ -1,0 +1,12 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /log-manager
+
+logging:
+  file:
+    name: /Users/rainy/Developer/code/java/log-manager/logs/log-manager.log
+
+lucene:
+  index-path: /Users/rainy/Developer/code/java/log-manager/index
+  docs-path: /Users/rainy/Developer/code/java/log-manager/logs
