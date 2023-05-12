@@ -106,15 +106,18 @@ public class IndexLoader implements CommandLineRunner {
                             }
 
                             for (File file : files) {
-                                String filename = file.getName();
-                                String extension = filename.substring(filename.lastIndexOf('.') + 1);
-                                if (extension.equals("log")) {
+                                if (isLogFile(file)) {
                                     indexDoc(writer, file.toPath());
                                 } else {
-                                    log.warn("this is not log file: {}", file);
+                                    log.warn("is not log file: {}", file);
                                 }
                                 Files.delete(file.toPath());
                             }
+                            return FileVisitResult.CONTINUE;
+                        }
+
+                        if (!isLogFile(path.toFile())) {
+                            log.warn("is not log file: {}", path);
                             return FileVisitResult.CONTINUE;
                         }
 
@@ -206,6 +209,12 @@ public class IndexLoader implements CommandLineRunner {
             writer.addDocument(doc);
         }
 
+    }
+
+    private boolean isLogFile(File file) {
+        String filename = file.getName();
+        String extension = filename.substring(filename.lastIndexOf('.') + 1);
+        return "log".equals(extension);
     }
 
 
