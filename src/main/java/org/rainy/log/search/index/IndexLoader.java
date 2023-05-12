@@ -19,9 +19,12 @@ import org.rainy.log.config.LuceneConfig;
 import org.rainy.log.listener.FileContent;
 import org.rainy.log.listener.FileListener;
 import org.rainy.log.search.Constant;
+import org.rainy.log.utils.DecompressUtils;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
 
+import java.io.File;
+import java.io.FileFilter;
 import java.io.IOException;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -48,10 +51,12 @@ public class IndexLoader implements CommandLineRunner {
     private static final Pattern DATETIME_PATTERN = Pattern.compile("\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}.\\d{3}");
     private static final DateTimeFormatter LOCAL_DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
+    private static final Path TEMP_DIRECTORY = Paths.get("/tmp/decompress");
+
     private static final AtomicLong DIFF_SIZE = new AtomicLong(0);
-    private static final long LOAD_CAPACITY = 1000;
     private static final CopyOnWriteArrayList<FileContent> FILE_CONTENT_STORAGE = new CopyOnWriteArrayList<>();
 
+    private final long LOAD_CAPACITY = 5000;
     private final LuceneConfig luceneConfig;
     private final LogConfig logConfig;
 
@@ -67,7 +72,7 @@ public class IndexLoader implements CommandLineRunner {
         new Thread(new FileListener(Long.MAX_VALUE, lastPos, fileContent -> {
             FILE_CONTENT_STORAGE.add(fileContent);
             long diff = DIFF_SIZE.addAndGet(fileContent.getContent().length());
-            if (diff >= LOAD_CAPACITY) {
+            if (diff >= LOAD_CAPACITY) {    //  增量加载索引
                 try (IndexWriter writer = getIndexWriter(LoadType.INCR)) {
                     for (FileContent content : FILE_CONTENT_STORAGE) {
                         indexDoc(writer, content);
@@ -80,7 +85,7 @@ public class IndexLoader implements CommandLineRunner {
                 FILE_CONTENT_STORAGE.clear();
                 DIFF_SIZE.set(0);
             } else {
-                log.info("detect log file changed, current diff: {}", DIFF_SIZE);
+                log.info("detect log file changed, current diff: {} < load capacity: {}", DIFF_SIZE, LOAD_CAPACITY);
             }
         })).start();
     }
@@ -94,14 +99,27 @@ public class IndexLoader implements CommandLineRunner {
             if (Files.isDirectory(docDir)) {
                 Files.walkFileTree(docDir, new SimpleFileVisitor<>() {
                     @Override
-                    public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                        // TODO: 如果是压缩包需要解压
-                        String mimeType = Files.probeContentType(file);
-                        if (mimeType != null && (mimeType.startsWith("application/zip") || mimeType.startsWith("application/gz"))) {
+                    public FileVisitResult visitFile(Path path, BasicFileAttributes attrs) throws IOException {
+                        if (DecompressUtils.decompress(path.toFile(), TEMP_DIRECTORY)) {
+                            File[] files = TEMP_DIRECTORY.toFile().listFiles(File::isFile);
+                            if (files == null) {
+                                return FileVisitResult.CONTINUE;
+                            }
 
+                            for (File file : files) {
+                                String filename = file.getName();
+                                String extension = filename.substring(filename.lastIndexOf('.') + 1);
+                                if (extension.equals("log")) {
+                                    indexDoc(writer, file.toPath());
+                                } else {
+                                    log.warn("this is not log file: {}", file);
+                                }
+                                Files.delete(file.toPath());
+                            }
                             return FileVisitResult.CONTINUE;
                         }
-                        indexDoc(writer, file);
+
+                        indexDoc(writer, path);
                         return FileVisitResult.CONTINUE;
                     }
                 });
@@ -109,11 +127,14 @@ public class IndexLoader implements CommandLineRunner {
                 indexDoc(writer, docDir);
             }
 
-            writer.forceMerge(1);
+//            writer.forceMerge(1);
             writer.commit();
 
             try (IndexReader reader = DirectoryReader.open(writer.getDirectory())) {
                 log.info("{} index load completed, write docs: {}, cost: {}ms", loadType.name(), reader.numDocs(), System.currentTimeMillis() - start);
+            } finally {
+                Files.delete(TEMP_DIRECTORY);
+                log.debug("delete temp directory: {}", TEMP_DIRECTORY);
             }
 
         } catch (IOException e) {
@@ -134,7 +155,7 @@ public class IndexLoader implements CommandLineRunner {
         } else {
             writerConfig.setOpenMode(IndexWriterConfig.OpenMode.CREATE_OR_APPEND);
         }
-        writerConfig.setRAMBufferSizeMB(256.0);
+//        writerConfig.setRAMBufferSizeMB(256.0);
         return new IndexWriter(dir, writerConfig);
     }
 
